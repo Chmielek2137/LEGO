@@ -1,0 +1,169 @@
+---
+title: "LEGO"
+author: "Patryk Chmielecki 145190"
+date: "`r Sys.Date()`"
+output:
+  html_document: 
+    toc: yes
+    toc_float: true
+    theme: simplex
+    number_sections: yes
+---
+
+```{r setup, include=FALSE}
+library(tools)
+library(dplyr)
+library(base)
+library(ggplot2)
+library(ggsci)
+library(plotly)
+library(DT)
+library(forecast)
+
+knitr::opts_chunk$set(echo = TRUE)
+
+prettyTable <- function(table_df, round_digits=2) {
+    DT::datatable(table_df, style="bootstrap", filter = "top", rownames = FALSE, extensions = "Buttons", options = list(dom = 'Bfrtip', buttons = c('copy', 'csv', 'excel', 'pdf', 'print'))) %>% formatRound(names(dplyr::select_if(table_df, is.numeric)), round_digits)
+}
+
+```
+
+
+```{r load_data, include=FALSE}
+files <- dir(path = "./data", pattern = "*.csv", full.names = TRUE)
+list_of_df <- sapply(files, read.csv, simplify = FALSE, USE.NAMES = TRUE)
+
+names(list_of_df) <- file_path_sans_ext(basename(names(list_of_df)))
+names(list_of_df[["Brickset-Sets"]]) <- gsub("\\.\\.","\\.",trimws(names(list_of_df[["Brickset-Sets"]]),whitespace = "[ \t\r\n.]"))
+
+list_of_df[["Brickset-Sets"]] <- list_of_df[["Brickset-Sets"]]%>%select(Number, RRP.USD, Width, Height, Depth, Weight, Launch.date, Exit.date)
+
+#chciałem mieć theme najwyższego poziomu, a są tylko max 3 poziomy
+themes_joined <- left_join(list_of_df[["themes"]], list_of_df[["themes"]], by=join_by(parent_id == id))
+themes_joined <- left_join(themes_joined, list_of_df[["themes"]], by=join_by(parent_id.y == id))
+
+themes_joined <- themes_joined%>%mutate(top_lvl_parent_id = if_else(is.na(parent_id.x), id, if_else(is.na(parent_id.y), parent_id.x, parent_id.y)))%>%select(id, name.x, parent_id.x, top_lvl_parent_id)%>%rename(name = name.x, parent_id = parent_id.x)
+
+list_of_df[["themes"]] <- themes_joined
+rm(themes_joined)
+
+avg_elem_num <-list_of_df[["sets"]]%>%
+  filter(num_parts >0)%>%
+  group_by(year)%>%
+  filter(n() >= 10)%>%
+  summarize(mean = mean(num_parts), sd = sd(num_parts))
+
+sets_with_price <- left_join(list_of_df[["sets"]], list_of_df[["Brickset-Sets"]], by = join_by(set_num == Number))%>%select(set_num, name,year,theme_id, RRP.USD)
+```
+
+
+# Ogólne wnioski
+
+Pozniższy raport skupia się na analizie zestawów LEGO. Wykorzystane dane pochodzą z serwisu Rebrickable (https://rebrickable.com/downloads/) oraz serwisu BRICKSET (https://brickset.com/). Raport w głównej mierze skupia się na ilości klocków na przestrzeni lat oraz cenie zestawów. Z każdym rokiem zwiększa się liczba zestawów wydawanych przez firmę LEGO. Zwiększa się też średnia liczba elementów w zestawie, lecz i odchylenie standardowe liczby klocków. Średnia cena zestawu nie rośnie tak szybko jak średnia liczba elementów, lecz odchylenie standardowe ceny jest dużo większe niż w początkowych latach działalności firmy.
+
+
+# Liczba wydawanych zestawów w danych latach
+
+Na poniższym histogramie pokazano liczbę wydawanych rocznie zestawów w danych latach. Jak możemy zaobserwować liczba wydawanych zestawów rośnie wykładniczo. Gwałtowny wzrost miał miejsce na początku lat 90 XX wieku.
+
+```{r hist_sets_to_year, echo=FALSE}
+ggplot(list_of_df[["sets"]], aes(x=year)) + 
+  geom_histogram(binwidth=1)
+```
+
+# Analiza liczby elementów zestawu
+
+## Liczba elementów w zależności od serii
+
+W poniższej tabeli przedstawiono średnią liczbę elementów zestawu w zależności od serii. Średnio najwięcej elementów posiadają zestwy z serii LEGO Art. Posiadają one również najwyższe odchylenie standardowe. Może to sugerować dużą różnorodność zestawów z tej serii pod względem liczby elementów. W porównaniu z tą serią, seria Modular Buildings, mimo wyskokiej średniej liczby klocków w zestawie posiada dosyć niskie odchylenie standardowe.
+
+```{r themed_sets_dt, echo=FALSE}
+themed_sets <- left_join(list_of_df[["sets"]], list_of_df[["themes"]], by=join_by(theme_id == id))%>%
+  select(set_num, name.x, year, num_parts, top_lvl_parent_id)%>%
+  rename(name = name.x)%>%
+  left_join(list_of_df[["themes"]], by=join_by(top_lvl_parent_id==id))%>%
+  select(set_num, name.x, year, num_parts, name.y)%>%
+  rename(Numer_zestawu = set_num, Nazwa_zestawu = name.x, Rok = year, Nazwa_serii = name.y, liczba_elementów = num_parts)%>%
+  mutate(Rok = as.character(Rok))%>%
+  filter(liczba_elementów != 0)%>%
+  group_by(Nazwa_serii)%>%
+  filter(n() > 10)%>%
+  summarize(Średnia_liczba_elementów = mean(liczba_elementów), Odchylenie_std = sd(liczba_elementów))
+
+prettyTable(as.data.frame(themed_sets))
+```
+
+## Średnia liczba elementów zestawu w zależności od roku
+
+Poniższy wykres przedstawia średnią liczbę elementów w danych latach oraz odchylenie standardowe liczby elementów. Z danych odfiltrowano zestawy, które miały po 0 elementów, np. Książki. Możemy zaobserwować wzrost średniej liczby elementów w roku 2007, a następnie spadek, aby od 2016 roku ponownie wzrastać i osiągnąć maksimum w roku 2023. Widać również wzrost odchylenia standardowego od początku istnienia firmy. Może być to spowodowane większą liczbą oraz różnorodnością zestawu.
+
+```{r avg_set_parts, echo=FALSE, message=FALSE}
+plot_avg_parts_num <- ggplot(avg_elem_num, aes(x = year, y = mean)) + 
+  theme_bw() + 
+  labs(x= "Rok", y = "Średnia liczba klocków w zestawie") +
+  geom_point(alpha=0.5) + 
+  geom_smooth(method='gam') + 
+  geom_errorbar(aes(ymin=mean-sd, ymax=mean+sd), width=.2 ,position=position_dodge(0.05))
+
+ggplotly(plot_avg_parts_num)
+```
+
+## Predykcja przyszłej liczby elementów
+
+Poniższy wykres przedstawia predykcję średniej liczby elementów w zestawach LEGO w przeciągu kolejnych 10 lat. Do jej wykonania wykorzystano model ARIMA. Przewiduje on, że średnia liczba elementów będzie stabilnie rosnąć przez najbliższe 10 lat.
+
+```{r forecast_elem_num, echo=FALSE}
+
+ts_data <- ts(avg_elem_num$mean, start = c(min(avg_elem_num$year)), frequency = 1)
+
+model_arima <- auto.arima(ts_data)
+
+summary(model_arima)
+
+forecasts <- forecast(model_arima, h = 10) 
+plot(forecasts)
+```
+
+# Analiza średniej ceny zestawu
+
+## Analiza średniej ceny zestawu w kolejnych latach 
+
+```{r, echo=FALSE}
+na_num <- sum(is.na(sets_with_price$RRP.USD))
+sets_with_price_wo_na <- sets_with_price%>%filter(!is.na(RRP.USD))
+zero_num <- sum(sets_with_price_wo_na == 0)
+sets_with_price_wo_na_zero <- sets_with_price%>%filter(RRP.USD > 0)
+summ1963 <- sets_with_price_wo_na_zero%>%filter(year==1963)%>%summarize(n=n())
+val1963 <- summ1963$n[[1]]
+sets_wit_price_grouped <- sets_with_price_wo_na_zero%>%filter(year <= 2023)%>%group_by(year)%>%summarize(mean = mean(RRP.USD), sd = sd(RRP.USD))
+```
+
+Poniższy wykres przedstawia średnie ceny zestawów LEGO w kolejnych latach. Średnia cena również miała trend wzrostowy, podobnie jak średnia liczba elementów, lecz tutaj wzrost nie jest tak szybki jak w przypadku średniej liczby elementów, lecz podobnie jak tam również odchylenie standardowo cen mocno wzrosła od początku istnienia firmy. Ciekawym ewenementem jest rok 1963, który posiada bardzo wysoką średnią. Jest to spowodowane tym, że w tym roku wydano `r val1963` zestaw LEGO w dość wysokiej cenie.
+
+```{r avg_set_price, echo=FALSE, message=FALSE}
+plot_sets_price <- ggplot(sets_wit_price_grouped, aes(x = year, y = mean)) + 
+  theme_bw() + 
+  labs(x= "Rok", y = "Średnia cena zestawu") +
+  geom_point(alpha=0.5) + 
+  geom_smooth(method='gam') + 
+  geom_errorbar(aes(ymin=mean-sd, ymax=mean+sd), width=.2 ,position=position_dodge(0.05))
+
+ggplotly(plot_sets_price)
+```
+## Predykcja przyszłych cen zestawów LEGO
+
+Poniższy wykres przedstawia predykcję cen zestawów na najbliższ 10 lat. Jak w przypadku predykcji liczby elementów, również i tutaj wykorzystano model ARIMA, i podobnie jak w tamtym przypadku przewiduje on stabilny wzrost ceny zestawu.
+
+```{r forecast_price, echo=FALSE}
+
+sets_wit_price_grouped <- sets_with_price_wo_na_zero%>%filter(year <= 2023)%>%filter(year != 1963)%>%group_by(year)%>%summarize(mean = mean(RRP.USD), sd = sd(RRP.USD))
+
+ts_data <- ts(sets_wit_price_grouped$mean, start = c(min(sets_wit_price_grouped$year)), frequency = 1)
+
+model_arima <- auto.arima(ts_data)
+
+summary(model_arima)
+
+forecasts <- forecast(model_arima, h = 10) 
+plot(forecasts)
+```
